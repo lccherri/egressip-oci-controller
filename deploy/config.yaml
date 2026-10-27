@@ -1,0 +1,47 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: egressip-oci
+---
+# DR fencing: only the cluster with active=true changes private IPs in OCI.
+# A missing ConfigMap means inactive (fail-safe).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: egressip-oci-active
+  namespace: egressip-oci
+data:
+  active: "true"
+---
+# OpenShift injects the cluster trusted CA bundle here (proxy trustedCA plus
+# system CAs). Required when the DRCC endpoints use a private CA.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trusted-ca
+  namespace: egressip-oci
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"
+---
+# OCI credentials (api_key) for a dedicated service user whose policy is
+# limited to the node compartment. In production, deliver this Secret through
+# External Secrets Operator or Vault instead of keeping it in Git.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oci-credentials
+  namespace: egressip-oci
+type: Opaque
+stringData:
+  config: |
+    [DEFAULT]
+    user=ocid1.user.oc1..CHANGEME
+    fingerprint=aa:bb:cc:CHANGEME
+    tenancy=ocid1.tenancy.oc1..CHANGEME
+    region=CHANGEME
+    key_file=/etc/oci/key.pem
+  key.pem: |
+    -----BEGIN PRIVATE KEY-----
+    CHANGEME
+    -----END PRIVATE KEY-----

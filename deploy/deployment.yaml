@@ -1,0 +1,112 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egressip-oci-controller
+  namespace: egressip-oci
+  labels: {app: egressip-oci-controller}
+spec:
+  # Two replicas with leader election: one active, the other takes over in ~15 s.
+  replicas: 2
+  selector:
+    matchLabels: {app: egressip-oci-controller}
+  template:
+    metadata:
+      labels: {app: egressip-oci-controller}
+    spec:
+      serviceAccountName: egressip-oci-controller
+      priorityClassName: system-cluster-critical
+      # Control plane nodes are not removed by the cluster autoscaler.
+      nodeSelector:
+        node-role.kubernetes.io/master: ""
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+        # Evicts a replica from a failed node after 15 s instead of the default 300 s.
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 15
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 15
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels: {app: egressip-oci-controller}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: controller
+          image: REGISTRY/egressip-oci-controller:0.1.0
+          args:
+            - --zap-log-level=info
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: SUBNET_OCIDS
+              value: "ocid1.subnet.oc1..CHANGEME"
+            - name: CLUSTER_ID
+              value: "cluster-a"
+            - name: RESYNC
+              value: "60s"
+            - name: OCI_AUTH
+              value: "api_key"           # or instance_principal
+            - name: OCI_CONFIG_FILE
+              value: "/etc/oci/config"
+            # - name: OCI_SERVICE_ENDPOINT   # Networking endpoint of the DRCC realm
+            #   value: "https://iaas.<region>.<realm-domain>"
+            # The OCI SDK honors the standard proxy variables. OpenShift does not
+            # inject the cluster-wide proxy into workloads, so set them if needed.
+            # - name: HTTPS_PROXY
+            #   value: "http://proxy.example.com:3128"
+            # - name: NO_PROXY
+            #   value: ".cluster.local,.svc,172.30.0.1"
+            - name: DRY_RUN
+              value: "true"              # review the logs before disabling
+          ports:
+            - {name: metrics, containerPort: 8080}
+            - {name: health, containerPort: 8081}
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: oci-credentials, mountPath: /etc/oci, readOnly: true}
+            - name: trusted-ca
+              mountPath: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+              subPath: ca-bundle.crt
+              readOnly: true
+      volumes:
+        - name: oci-credentials
+          secret:
+            secretName: oci-credentials
+            defaultMode: 0400
+        - name: trusted-ca
+          configMap:
+            name: trusted-ca
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: egressip-oci-controller-metrics
+  namespace: egressip-oci
+  labels: {app: egressip-oci-controller}
+spec:
+  selector: {app: egressip-oci-controller}
+  ports:
+    - {name: metrics, port: 8080, targetPort: metrics}

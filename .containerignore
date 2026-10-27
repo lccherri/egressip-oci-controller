@@ -1,0 +1,4 @@
+.git
+bin/
+context/
+egressip-oci-controller
