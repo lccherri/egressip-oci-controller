@@ -15,8 +15,8 @@ On AWS, Azure, GCP and OpenStack, OpenShift's `cloud-network-config-controller` 
 EgressIPs with the cloud provider. OCI is not a supported platform for that component, so
 on clusters installed with `platform: external` / `platformName: oci` the EgressIP is
 assigned to a node but never registered on its VNIC, and egress traffic is silently
-dropped. Related Red Hat requests: [RFE-6842](https://issues.redhat.com/browse/RFE-6842)
-and [RFE-7130](https://issues.redhat.com/browse/RFE-7130). Once native support is
+dropped. Related Red Hat requests: [RFE-6842](https://redhat.atlassian.net/browse/RFE-6842)
+and [RFE-7130](https://redhat.atlassian.net/browse/RFE-7130). Once native support is
 available, this controller should be removed.
 
 ## How it works
