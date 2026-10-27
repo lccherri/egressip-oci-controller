@@ -21,11 +21,22 @@ available, this controller should be removed.
 
 ## How it works
 
-```
-EgressIP (status.items[].node) ─┐
-Node (primary IP)               ├─► queue with ONE key ─► global Reconcile ─► OCI Networking API
-Fencing ConfigMap               ┘   (bursts become 1 run)                     CREATE / MOVE / DELETE
-                                     + periodic resync (60 s)
+```mermaid
+flowchart LR
+    eip["EgressIP<br/>status.items[].node"]
+    node["Node<br/>primary IP"]
+    cm["Fencing ConfigMap"]
+    resync(["Periodic resync<br/>60 s"])
+    queue[["Work queue<br/>single key<br/>bursts become 1 run"]]
+    rec["Global Reconcile"]
+    oci[("OCI Networking API<br/>CREATE / MOVE / DELETE")]
+
+    eip --> queue
+    node --> queue
+    cm --> queue
+    resync --> queue
+    queue --> rec
+    rec --> oci
 ```
 
 | Action | When                                                          | OCI API           |
