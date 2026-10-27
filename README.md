@@ -68,8 +68,8 @@ Guarantees:
 
 | Topic | Decision | Reason |
 |-------|----------|--------|
-| Language | Go, static binary (`CGO_ENABLED=0`) | Final image has no interpreter or runtime packages |
-| Image | `ubi9/ubi-micro` | No shell and no package manager; Red Hat supported base |
+| Language | Go, built with the Red Hat toolchain (`CGO_ENABLED=1`) | Crypto goes through the RHEL OpenSSL FIPS module (see [FIPS](#fips)) |
+| Image | `ubi9/ubi-micro` + `openssl-libs` | No package manager; Red Hat supported base |
 | Framework | `controller-runtime` v0.23 + `client-go` v0.35 | Same base as kubebuilder; v0.35 matches the Kubernetes version of OpenShift 4.22 |
 | EgressIP | `unstructured` | Avoids importing ovn-kubernetes as a dependency |
 | CRD / OLM | Not used | No API of its own; deployed with kustomize through RHACM or GitOps |
@@ -91,10 +91,38 @@ configured with an explicit policy ([internal/ocinet/network.go](internal/ocinet
 `CreatePrivateIp` carries an `opc-retry-token`, so a retried create is not duplicated.
 Errors that remain after the last attempt are handled by the controller-runtime requeue.
 
+## FIPS
+
+The image is FIPS-capable by default, which is the expected mode for DRCC and other
+regulated environments. The same image also runs on clusters without FIPS.
+
+| Item | Setting |
+|------|---------|
+| Toolchain | `ubi9/go-toolset` (Red Hat Go), `CGO_ENABLED=1` |
+| Crypto backend | RHEL OpenSSL; with FIPS mode enabled on the host, the OpenSSL FIPS provider |
+| Fail-safe | `GOEXPERIMENT=strictfipsruntime`: on a FIPS host without OpenSSL, the binary exits at startup instead of falling back to Go crypto |
+| Runtime | `ubi-micro` with `openssl-libs`, `openssl-fips-provider` and `crypto-policies`, installed with `dnf --installroot` |
+
+The `go` directive in `go.mod` must not exceed the Go version of `go-toolset`, because
+`GOTOOLCHAIN=local` is set there and newer toolchains are not downloaded.
+
+Verification:
+```bash
+# Image scan used for OpenShift FIPS compliance
+check-payload scan image REGISTRY/egressip-oci-controller:0.1.0
+
+# Local smoke test: GOLANG_FIPS=1 forces FIPS mode in Red Hat Go
+podman run --rm -e GOLANG_FIPS=1 REGISTRY/egressip-oci-controller:0.1.0
+# expected: "SUBNET_OCIDS and CLUSTER_ID are required", without an OpenSSL panic
+```
+
+Whether the cluster itself runs in FIPS mode is shown by
+`oc debug node/<node> -- chroot /host fips-mode-setup --check`.
+
 ## CVEs
 
-A Go binary removes the interpreter and system libraries from the image, but **Go standard
-library CVEs are compiled into the binary**. Consequences:
+**Go standard library CVEs are compiled into the binary**, and the runtime image carries
+the RPMs listed above. Consequences:
 
 1. **Rebuild periodically** with a patched toolchain, not only when the code changes.
 2. **Gate builds on `govulncheck`**:
@@ -103,12 +131,12 @@ library CVEs are compiled into the binary**. Consequences:
    govulncheck ./...                                     # source (reachable symbols)
    govulncheck -mode binary ./egressip-oci-controller    # final binary
    ```
-3. Check the Go version shipped in the UBI `go-toolset`. If it lacks recent fixes, build
-   with `--build-arg BUILDER_IMAGE=...` pointing to a current toolchain.
-
-**FIPS**: if the clusters run in FIPS mode, the build path must change (Red Hat go-toolset
-with OpenSSL and `CGO_ENABLED=1`, or the native Go FIPS module). This requires changes to
-the `Containerfile`.
+3. Run `govulncheck` with the same toolchain used by the image (`go-toolset`). Red Hat
+   backports fixes without changing the Go version, so a standard library finding must be
+   checked against the [Red Hat CVE database](https://access.redhat.com/security/security-updates/cve)
+   before acting on it.
+4. Scan the image (RPM layer) with the registry scanner, for example Clair in Quay or
+   Red Hat Advanced Cluster Security.
 
 ## Build
 
@@ -116,6 +144,13 @@ the `Containerfile`.
 go vet ./...
 go test -race ./...
 podman build -t REGISTRY/egressip-oci-controller:0.1.0 .
+
+# Tests with the same toolchain and flags as the image, in forced FIPS mode
+podman run --rm -v "$PWD":/src:ro,Z -w /src -e GOFLAGS=-buildvcs=false \
+  -e GOCACHE=/tmp/cache -e GOMODCACHE=/tmp/mod -e GOLANG_FIPS=1 \
+  -e CGO_ENABLED=1 -e GOEXPERIMENT=strictfipsruntime \
+  registry.access.redhat.com/ubi9/go-toolset:latest \
+  go test -tags strictfipsruntime ./...
 ```
 
 `go.sum` is committed; the image build runs `go mod download` and `go mod verify` before
