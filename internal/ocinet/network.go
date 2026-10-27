@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"os"
 	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
@@ -98,7 +99,36 @@ func New(opts Options) (Network, error) {
 	return newWithProvider(provider, opts.ServiceEndpoint, RetryPolicy())
 }
 
+// defaultRealmEnv is read by the SDK as the domain of regions it does not know.
+const defaultRealmEnv = "OCI_DEFAULT_REALM"
+
+// checkEndpoint fails when the SDK would build the endpoint of an unknown region
+// (such as a DRCC region) with the commercial domain oraclecloud.com. The SDK
+// recognizes a region from its built-in list, OCI_REGION_METADATA or
+// ~/.oci/regions-config.json.
+func checkEndpoint(provider common.ConfigurationProvider, endpoint string) error {
+	if endpoint != "" {
+		return nil
+	}
+	if _, ok := os.LookupEnv(defaultRealmEnv); ok {
+		return nil
+	}
+	region, err := provider.Region()
+	if err != nil {
+		return fmt.Errorf("reading OCI region: %w", err)
+	}
+	if _, err := common.StringToRegion(region).RealmID(); err != nil {
+		return fmt.Errorf("OCI region %q is not known to the SDK and no endpoint is configured; "+
+			"set OCI_SERVICE_ENDPOINT, OCI_REGION_METADATA or %s (see README, DRCC configuration)",
+			region, defaultRealmEnv)
+	}
+	return nil
+}
+
 func newWithProvider(provider common.ConfigurationProvider, endpoint string, policy common.RetryPolicy) (*sdkNetwork, error) {
+	if err := checkEndpoint(provider, endpoint); err != nil {
+		return nil, err
+	}
 	vcn, err := core.NewVirtualNetworkClientWithConfigurationProvider(provider)
 	if err != nil {
 		return nil, fmt.Errorf("creating OCI Networking client: %w", err)

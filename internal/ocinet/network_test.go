@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,25 +41,53 @@ func fakeEndpoint(t *testing.T, replies ...reply) (*httptest.Server, *atomic.Int
 	return srv, &n
 }
 
-func testNetwork(t *testing.T, endpoint string) *sdkNetwork {
+func testProvider(t *testing.T, region string) common.ConfigurationProvider {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pemKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	provider := common.NewRawConfigurationProvider(
-		"ocid1.tenancy.oc1..test", "ocid1.user.oc1..test", "us-ashburn-1", "aa:bb", string(pemKey), nil)
+	return common.NewRawConfigurationProvider(
+		"ocid1.tenancy.oc1..test", "ocid1.user.oc1..test", region, "aa:bb", string(pemKey), nil)
+}
 
+func testNetwork(t *testing.T, endpoint string) *sdkNetwork {
+	t.Helper()
 	// Same retry conditions and attempt limit as production, without the sleep.
 	policy := RetryPolicy()
 	policy.NextDuration = func(common.OCIOperationResponse) time.Duration { return time.Millisecond }
 
-	n, err := newWithProvider(provider, endpoint, policy)
+	n, err := newWithProvider(testProvider(t, "us-ashburn-1"), endpoint, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestCheckEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name, region, endpoint, defaultRealm string
+		wantErr                              bool
+	}{
+		{name: "known region", region: "us-ashburn-1"},
+		{name: "unknown region without endpoint", region: "xx-dedicated-1", wantErr: true},
+		{name: "unknown region with endpoint", region: "xx-dedicated-1", endpoint: "https://iaas.xx-dedicated-1.example.com"},
+		{name: "unknown region with default realm", region: "xx-dedicated-1", defaultRealm: "example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.defaultRealm != "" {
+				t.Setenv(defaultRealmEnv, tc.defaultRealm)
+			}
+			err := checkEndpoint(testProvider(t, tc.region), tc.endpoint)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "OCI_SERVICE_ENDPOINT") {
+				t.Fatalf("error does not name the setting to fix: %v", err)
+			}
+		})
+	}
 }
 
 func TestRetryPolicyBounds(t *testing.T) {

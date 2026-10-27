@@ -187,14 +187,59 @@ Allow group egressip-controller to use subnets in compartment <compartment>
 | `OCI_AUTH` | `--oci-auth` | `api_key` | `api_key` or `instance_principal` |
 | `OCI_CONFIG_FILE` | `--oci-config-file` | `/etc/oci/config` | OCI configuration file (api_key) |
 | `OCI_CONFIG_PROFILE` | `--oci-config-profile` | `DEFAULT` | Profile in the configuration file |
-| `OCI_SERVICE_ENDPOINT` | `--oci-service-endpoint` | — | Networking endpoint (DRCC realms) |
+| `OCI_SERVICE_ENDPOINT` | `--oci-service-endpoint` | — | Networking endpoint; required in DRCC unless one of the SDK variables below is set |
 | `POD_NAMESPACE` | `--leader-election-namespace` | — | Namespace of the leader election Lease |
 | — | `--leader-elect` | `true` | Leader election via Lease |
 | — | `--metrics-bind-address` / `--health-probe-bind-address` | `:8080` / `:8081` | Metrics and probes |
 
+Variables read directly by the OCI SDK:
+
+| Variable | Description |
+|----------|-------------|
+| `OCI_REGION_METADATA` | JSON definition of a region the SDK does not know (DRCC) |
+| `OCI_DEFAULT_REALM` | Domain used for regions the SDK does not know |
+| `HTTPS_PROXY` / `NO_PROXY` | Proxy for calls to OCI |
+
+### DRCC configuration
+
+The OCI SDK only knows the commercial and government regions. For any other region, such
+as a DRCC region, it builds endpoints with the commercial domain `oraclecloud.com`. The
+controller refuses to start in that case, with the message
+`OCI region "..." is not known to the SDK and no endpoint is configured`.
+
+Set **one** of the following in [deploy/deployment.yaml](deploy/deployment.yaml):
+
+| Option | Value | Requirement on `region` in the OCI config |
+|--------|-------|-------------------------------------------|
+| `OCI_SERVICE_ENDPOINT` (default in the manifest) | `https://iaas.<regionIdentifier>.<realmDomainComponent>` | None |
+| `OCI_REGION_METADATA` | `{"realmKey":"...","realmDomainComponent":"...","regionKey":"...","regionIdentifier":"..."}` (all four fields) | `regionIdentifier` or `regionKey` |
+| `OCI_DEFAULT_REALM` | `<realmDomainComponent>` | `regionIdentifier` |
+
+The values come from the instance metadata service of any node in the region:
+
+```bash
+oc debug node/<node> -- chroot /host \
+  curl -s -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/regionInfo
+```
+
+The output is already in the `OCI_REGION_METADATA` format. Other sources:
+
+| Field | Alternative source |
+|-------|--------------------|
+| `realmKey` | Third segment of any OCID in the region (`ocid1.subnet.<realmKey>.<regionKey>.…`) |
+| `regionKey` | Fourth segment of a regional OCID, or `region-key` in `oci iam region-subscription list` |
+| `regionIdentifier` | `region` in an existing OCI CLI config, or `region-name` in `oci iam region-subscription list` |
+| `realmDomainComponent` | Console URL (`console.<regionIdentifier>.<realmDomainComponent>`) |
+
+Check the endpoint from a host with access to the region:
+`curl -sI https://iaas.<regionIdentifier>.<realmDomainComponent>`. Any HTTP response,
+including `401` or `404`, confirms DNS and TLS. In commercial OCI regions, remove
+`OCI_SERVICE_ENDPOINT` from the manifest.
+
 ## Deployment
 
-1. Edit `deploy/`: image, `SUBNET_OCIDS`, `CLUSTER_ID` and the `oci-credentials` Secret
+1. Edit `deploy/`: image, `SUBNET_OCIDS`, `CLUSTER_ID`, the OCI endpoint
+   ([DRCC configuration](#drcc-configuration)) and the `oci-credentials` Secret
    (in production, deliver the Secret through External Secrets Operator or Vault).
 2. Apply with `DRY_RUN=true` (the default in the manifest):
    ```bash
@@ -206,7 +251,7 @@ Allow group egressip-controller to use subnets in compartment <compartment>
 4. Remove any fixed `nodeSelector` pinning EgressIPs to a single node and label the egress
    node pool.
 5. For multiple clusters, distribute `deploy/` with an RHACM Policy or an ApplicationSet,
-   using one overlay per cluster (`CLUSTER_ID`, `SUBNET_OCIDS`).
+   using one overlay per cluster (`CLUSTER_ID`, `SUBNET_OCIDS`, `OCI_SERVICE_ENDPOINT`).
 
 ## Operations
 
@@ -230,6 +275,7 @@ Metrics (port 8080, Service `egressip-oci-controller-metrics`):
 |---------|--------------|--------|
 | `node X (IP ...) is outside the configured subnets` | `SUBNET_OCIDS` incomplete | Add the node subnet |
 | Event `OCIAddressConflict` | EgressIP collides with an instance IP | Change the EgressIP address |
+| `OCI region "..." is not known to the SDK` | DRCC region without endpoint configuration | See [DRCC configuration](#drcc-configuration) |
 | `NotAuthorizedOrNotFound` | Incomplete IAM policy | Review IAM |
 | `x509: certificate signed by unknown authority` | DRCC CA missing from the bundle | Add the CA to `proxy/cluster` (trustedCA) |
 | Timeout or `connection refused` at startup | No route to the OCI endpoint | Set `HTTPS_PROXY` / `NO_PROXY` |
@@ -254,7 +300,7 @@ Unit tests use a fake Kubernetes client and a fake OCI implementation
 | `TestIPOutsideSubnetsIgnored` | IPs outside the subnets are ignored |
 | `TestUnknownNodeReturnsError` | An unknown node triggers a retry |
 
-Retry tests run the real SDK client against a local HTTP server
+OCI client tests run the real SDK client against a local HTTP server
 ([internal/ocinet/network_test.go](internal/ocinet/network_test.go)):
 
 | Test | Verifies |
@@ -263,6 +309,7 @@ Retry tests run the real SDK client against a local HTTP server
 | `TestRetriesTransientErrors` | `429`, `409 IncorrectState` and `503` are retried |
 | `TestDoesNotRetryPermanentErrors` | `409 Conflict`, `404` and `400` are not retried |
 | `TestGivesUpAfterMaxAttempts` | Persistent `500` stops after 5 attempts |
+| `TestCheckEndpoint` | Unknown region without endpoint configuration fails at startup |
 
 Acceptance tests in a real environment should cover provisioning, planned failover
 (remove the `egress-assignable` label), node failure (stop the instance and measure the
@@ -271,8 +318,6 @@ recovery time), removal (GC) and drift (move the IP by hand).
 ## Known limitations
 
 - Not yet validated against a real OCI or DRCC environment.
-- In DRCC realms the SDK may not recognize the region. Use `OCI_SERVICE_ENDPOINT` or the
-  SDK custom region mechanism (`OCI_REGION_METADATA`).
 - IPv4 only.
 - Nodes with more than one VNIC: the VNIC of the primary IP is always used.
 - Out of scope: EgressIP on secondary interfaces (OCI L2 VLAN).

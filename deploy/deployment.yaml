@@ -59,8 +59,21 @@ spec:
               value: "api_key"           # or instance_principal
             - name: OCI_CONFIG_FILE
               value: "/etc/oci/config"
-            # - name: OCI_SERVICE_ENDPOINT   # Networking endpoint of the DRCC realm
-            #   value: "https://iaas.<region>.<realm-domain>"
+            # DRCC regions are not known to the OCI SDK; set exactly one of the
+            # options below (see README, DRCC configuration). The values come
+            # from the instance metadata service:
+            #   curl -H "Authorization: Bearer Oracle" http://169.254.169.254/opc/v2/instance/regionInfo
+            # In commercial OCI regions, remove OCI_SERVICE_ENDPOINT.
+            # Option 1: Networking endpoint, https://iaas.<regionIdentifier>.<realmDomainComponent>
+            - name: OCI_SERVICE_ENDPOINT
+              value: "https://iaas.CHANGEME"
+            # Option 2: region metadata (the regionInfo output); region in the
+            # OCI config must match regionIdentifier or regionKey.
+            # - name: OCI_REGION_METADATA
+            #   value: '{"realmKey":"CHANGEME","realmDomainComponent":"CHANGEME","regionKey":"CHANGEME","regionIdentifier":"CHANGEME"}'
+            # Option 3: realm domain only; region in the OCI config must be regionIdentifier.
+            # - name: OCI_DEFAULT_REALM
+            #   value: "CHANGEME"
             # The OCI SDK honors the standard proxy variables. OpenShift does not
             # inject the cluster-wide proxy into workloads, so set them if needed.
             # - name: HTTPS_PROXY
