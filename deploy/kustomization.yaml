@@ -7,5 +7,5 @@ resources:
 # Per cluster (overlay / RHACM / GitOps): set the image, SUBNET_OCIDS and CLUSTER_ID.
 images:
   - name: REGISTRY/egressip-oci-controller
-    newName: REGISTRY/egressip-oci-controller
-    newTag: 0.1.0
+    newName: ghcr.io/paulovigne/egressip-oci-controller
+    newTag: main
