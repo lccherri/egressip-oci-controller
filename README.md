@@ -46,8 +46,12 @@ flowchart LR
 | DELETE | IP created by this controller whose EgressIP was removed      | `DeletePrivateIp` |
 | error  | IP is the primary IP of another VNIC                          | none, Event `OCIAddressConflict` |
 
-The target VNIC is the one holding the node's primary IP (annotation
-`k8s.ovn.org/node-primary-ifaddr`, falling back to the `InternalIP` address).
+The controller resolves the target VNIC for a node by identifying its designated interface IP. Resolution follows this priority order:
+1. **Dedicated Secondary Interface**: The IP explicitly declared in the node annotation `egressip.oci.dataprev.gov.br/interface-ip` (e.g., `"192.168.2.20"`). This allows separating egress traffic into a dedicated secondary VNIC.
+2. **OVN Primary Interface**: The IP reported in the OVN annotation `k8s.ovn.org/node-primary-ifaddr`.
+3. **Node Internal IP**: The standard Kubernetes `NodeInternalIP` address as a final fallback.
+
+> ⚠️ **Important:** OCI secondary private IPs must belong to the exact same subnet as the destination VNIC. If a dedicated interface IP is used via annotation, its subnet must match the subnet configured for the EgressIP.
 
 Guarantees:
 - **Idempotent**: N runs issue the same calls as one run.
@@ -159,6 +163,7 @@ compiling.
 ## Prerequisites
 
 ### Network
+- Dedicated Secondary Interfaces (Optional): If you route EgressIP traffic through a dedicated secondary network interface on the nodes, you must annotate each eligible Node with egressip.oci.dataprev.gov.br/interface-ip: "<INTERFACE_IP>". The provided IP must be a plain IPv4 address belonging to one of the configured subnets.
 - Each EgressIP must be in **the same subnet** as the primary VNIC of the egress nodes.
 - A fixed pool of 2–3 nodes labeled `k8s.ovn.org/egress-assignable=""`, outside any
   autoscaled MachineSet, spread across fault domains.
@@ -274,6 +279,7 @@ Metrics (port 8080, Service `egressip-oci-controller-metrics`):
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
 | `node X (IP ...) is outside the configured subnets` | `SUBNET_OCIDS` incomplete | Add the node subnet |
+| `node X has no valid EgressIP interface IP...` | Missing or invalid IP format in the node annotation, or missing NodeInternalIP fallback | Verify the node annotation `egressip.oci.dataprev.gov.br/interface-ip` is a valid IPv4 or check node status |
 | Event `OCIAddressConflict` | EgressIP collides with an instance IP | Change the EgressIP address |
 | `OCI region "..." is not known to the SDK` | DRCC region without endpoint configuration | See [DRCC configuration](#drcc-configuration) |
 | `NotAuthorizedOrNotFound` | Incomplete IAM policy | Review IAM |
@@ -321,3 +327,4 @@ recovery time), removal (GC) and drift (move the IP by hand).
 - IPv4 only.
 - Nodes with more than one VNIC: the VNIC of the primary IP is always used.
 - Out of scope: EgressIP on secondary interfaces (OCI L2 VLAN).
+- Nodes with more than one VNIC: The controller uses the VNIC matching the IP explicitly declared in the egressip.oci.dataprev.gov.br/interface-ip annotation. If the annotation is absent, it always falls back to the VNIC holding the node's primary interface IP.

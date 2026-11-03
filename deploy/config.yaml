@@ -4,6 +4,41 @@ kind: Namespace
 metadata:
   name: egressip-oci
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oci-integration-config
+  namespace: egressip-oci
+data:
+  SUBNET_OCIDS: "ocid1.subnet.oc1..CHANGEME"
+  CLUSTER_ID: "cluster-a"
+  RESYNC: "60s"
+  OCI_AUTH: "api_key"           # or instance_principal
+  OCI_CONFIG_FILE: "/etc/oci/config"
+  
+  # DRCC regions are not known to the OCI SDK; set exactly one of the
+  # options below (see README, DRCC configuration). The values come
+  # from the instance metadata service:
+  #   curl -H "Authorization: Bearer Oracle" http://169.254.169
+  # In commercial OCI regions, remove OCI_SERVICE_ENDPOINT.
+  
+  # Option 1: Networking endpoint, https://iaas.<regionIdentifier>.<realmDomainComponent>
+  OCI_SERVICE_ENDPOINT: "https://iaas.CHANGEME"
+  
+  # Option 2: region metadata (the regionInfo output); region in the
+  # OCI config must match regionIdentifier or regionKey.
+  # OCI_REGION_METADATA: '{"realmKey":"CHANGEME","realmDomainComponent":"CHANGEME","regionKey":"CHANGEME","regionIdentifier":"CHANGEME"}'
+  
+  # Option 3: realm domain only; region in the OCI config must be regionIdentifier.
+  # OCI_DEFAULT_REALM: "CHANGEME"
+  
+  # The OCI SDK honors the standard proxy variables. OpenShift does not
+  # inject the cluster-wide proxy into workloads, so set them if needed.
+  # HTTPS_PROXY: "http://example.com"
+  # NO_PROXY: ".cluster.local,.svc,172.30.0.1"
+  
+  DRY_RUN: "true"              # review the logs before disabling
+---
 # DR fencing: only the cluster with active=true changes private IPs in OCI.
 # A missing ConfigMap means inactive (fail-safe).
 apiVersion: v1
